@@ -1,0 +1,4 @@
+[core]
+    remote = origin
+['remote "origin"']
+    url = https://dagshub.com/BlackPhoenix55555/numeric_image_classification.dvc
