@@ -1,69 +1,92 @@
-import os
-import numpy as np
-from PIL import Image
-from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
-def load_mnist_from_folder(folder_path):
-    X = []
-    y = []
-    for label in sorted(os.listdir(folder_path)):
-        label_folder = os.path.join(folder_path, label)
-        if not os.path.isdir(label_folder):
-            continue
-        for file in os.listdir(label_folder):
-            img_path = os.path.join(label_folder, file)
-            img = Image.open(img_path).convert('L')
-            img_array = np.array(img).flatten()
-            X.append(img_array)
-            y.append(int(label))
-    return np.array(X), np.array(y)
+# -------------------- DEVICE --------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-X_train, y_train = load_mnist_from_folder('./training')
-X_test, y_test = load_mnist_from_folder('./testing')
+# -------------------- DATA --------------------
+transform = transforms.Compose([
+    transforms.Grayscale(),
+    transforms.Resize((28, 28)),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
 
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+train_data = datasets.ImageFolder("./training", transform=transform)
+test_data = datasets.ImageFolder("./testing", transform=transform)
 
-def softmax(z):
-    exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))
-    return exp_z / np.sum(exp_z, axis=1, keepdims=True)
+train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=32)
 
-class SoftmaxRegression:
-    def __init__(self, learning_rate=0.1, iterations=1000):
-        self.learning_rate = learning_rate
-        self.iterations = iterations
+# -------------------- CNN MODEL --------------------
+class CNN(nn.Module):
+    def __init__(self):
+        super(CNN, self).__init__()
 
-    def fit(self, X, y):
-        m, n = X.shape
-        self.num_classes = len(np.unique(y))
-        self.W = np.zeros((n, self.num_classes))
-        self.b = np.zeros(self.num_classes)
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),  # 28x28 -> 28x28
+            nn.ReLU(),
+            nn.MaxPool2d(2),                             # 14x14
 
-        # one-hot encoding
-        y_one_hot = np.zeros((m, self.num_classes))
-        y_one_hot[np.arange(m), y] = 1
+            nn.Conv2d(32, 64, kernel_size=3, padding=1), # 14x14 -> 14x14
+            nn.ReLU(),
+            nn.MaxPool2d(2)                              # 7x7
+        )
 
-        for _ in range(self.iterations):
-            z = np.dot(X, self.W) + self.b
-            y_pred = softmax(z)
+        self.fc = nn.Sequential(
+            nn.Linear(64 * 7 * 7, 128),
+            nn.ReLU(),
+            nn.Linear(128, 10)
+        )
 
-            dw = (1/m) * np.dot(X.T, (y_pred - y_one_hot))
-            db = (1/m) * np.sum(y_pred - y_one_hot, axis=0)
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
 
-            self.W -= self.learning_rate * dw
-            self.b -= self.learning_rate * db
+model = CNN().to(device)
 
-    def predict(self, X):
-        z = np.dot(X, self.W) + self.b
-        y_pred = softmax(z)
-        return np.argmax(y_pred, axis=1)
+# -------------------- LOSS & OPTIMIZER --------------------
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-model = SoftmaxRegression(learning_rate=0.1, iterations=1000)
-model.fit(X_train_scaled, y_train)
+# -------------------- TRAIN --------------------
+epochs = 5
 
-predictions = model.predict(X_test_scaled)
-accuracy = np.mean(predictions == y_test)
+for epoch in range(epochs):
+    model.train()
+    total_loss = 0
 
-print("Accuracy:", accuracy)
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
 
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
+
+# -------------------- TEST --------------------
+model.eval()
+correct = 0
+total = 0
+
+with torch.no_grad():
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)
+        outputs = model(images)
+        _, predicted = torch.max(outputs, 1)
+
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+accuracy = 100 * correct / total
+print(f"\nTest Accuracy: {accuracy:.2f}%")
